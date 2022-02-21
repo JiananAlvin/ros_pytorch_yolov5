@@ -39,6 +39,7 @@ package_path = package.get_path('ros_pytorch_yolov5')
 class detectManager:
     def __init__(self):
         # print("\ndetect init\n")
+        self.colors = [[0, 0, 255], [255, 128, 0], [255, 255, 0], [0, 255, 0], [0, 238, 238], [255, 0, 0], [155, 48, 255], [255, 105, 180], [193, 205, 193], [255, 211, 155], [0, 255, 255]]
         self.weights = rospy.get_param('~weights')
         self.source = rospy.get_param('~source')
         self.view_img = rospy.get_param('~view_img')
@@ -204,7 +205,7 @@ class detectManager:
         
         self.source = os.path.join(package_path,'yolov5', self.source)
         # print(self.weights)
-        source, weights, view_img, save_txt, imgsz = self.source, self.weights, self.view_img, self.save_txt, self.img_size
+        source, weights, view_img, save_txt, imgsz, publish_image, colors = self.source, self.weights, self.view_img, self.save_txt, self.img_size, self.publish_image, self.colors
         webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
             ('rtsp://', 'rtmp://', 'http://'))
         self.project = os.path.join(package_path,'yolov5', self.project)
@@ -247,7 +248,8 @@ class detectManager:
 
         # Get names and colors
         names = model.module.names if hasattr(model, 'module') else model.names
-        colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
+        if colors == []:
+            self.colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
 
         # Run inference
         if device.type != 'cpu':
@@ -319,11 +321,11 @@ class detectManager:
                 
                 xmin, ymin, xmax, ymax, conf, det_class = det[0]
                 detection_msg = BoundingBox()
-                detection_msg.xmin = xmin
-                detection_msg.xmax = xmax
-                detection_msg.ymin = ymin
-                detection_msg.ymax = ymax
-                detection_msg.probability = conf
+                detection_msg.xmin = int(xmin.item())
+                detection_msg.xmax = int(xmax.item())
+                detection_msg.ymin = int(ymin.item())
+                detection_msg.ymax = int(ymax.item())
+                detection_msg.probability = conf.item()
                 detection_msg.Class = names[int(det_class)]
                 detection_results.bounding_boxes.append(detection_msg)
 
@@ -336,7 +338,7 @@ class detectManager:
                         line = (cls, *xywh, conf) if self.save_conf else (cls, *xywh)
                         with open(txt_path + '.txt', 'a') as f:
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
-                    if save_img or view_img:  # Add bbox to image
+                    if save_img or view_img or publish_image:  # Add bbox to image
                         label = f'{names[int(cls)]} {conf:.2f}'
                         plot_one_box(xyxy, im0, label=label,
                                     color=colors[int(cls)], line_thickness=3)
@@ -346,6 +348,10 @@ class detectManager:
             if view_img:
                 cv2.imshow(str(p), im0)
                 cv2.waitKey(1)  # 1 millisecond
+            
+            if publish_image:
+                img_msg = self.bridge.cv2_to_imgmsg(im0, encoding="bgr8")
+                self.pub_viz_.publish(img_msg)
             # Save results (image with detections)
             if save_img:
                 if dataset.mode == 'image':
