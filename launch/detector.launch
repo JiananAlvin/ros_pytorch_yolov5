@@ -19,6 +19,7 @@
     <!-- Published topics -->
     <arg name="publish_image" default="true"/>
     <arg name="detected_objects_topic" default="detected_objects_in_image"/>
+    <arg name="callback_image_topic" default="callback_image"/>
     <arg name="detections_image_topic" default="detections_image_topic"/>
     <arg name="detections_results_topic" default="detections_results_topic"/>
 
@@ -42,6 +43,7 @@
         <param name="conf_thres" value="$(arg conf_thres)"/>
         <param name="save_conf" value="$(arg save_conf)"/>
         <param name="detected_objects_topic" value="$(arg detected_objects_topic)"/>
+        <param name="callback_image_topic" value="$(arg callback_image_topic)"/>
         <param name="publish_image" value="$(arg publish_image)"/>
         <param name="detections_image_topic" value="$(arg detections_image_topic)"/>
         <param name="image_topic" value="$(arg image_topic)"/>

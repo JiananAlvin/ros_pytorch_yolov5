@@ -6,10 +6,9 @@ from pathlib import Path
 import rospy
 import std_msgs.msg
 from rospkg import RosPack
-from std_msgs.msg import UInt8
+from std_msgs.msg import UInt8, Int32MultiArray
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Polygon, Point32
-from ros_pytorch_yolov5.msg import BoundingBox, BoundingBoxes
 from cv_bridge import CvBridge, CvBridgeError
 from skimage.transform import resize
 
@@ -74,13 +73,13 @@ class detectManager:
         self.gpu_id = rospy.get_param('~gpu_id', 0)
         self.network_img_size = rospy.get_param('~img_size', 416)
         self.publish_image = rospy.get_param('~publish_image')
-
         self.image_topic = rospy.get_param('~image_topic')
 
         # Load CvBridge
         self.bridge = CvBridge()
         # Load publisher topics
         self.detected_objects_topic = rospy.get_param('~detected_objects_topic')
+        self.callback_image_topic = rospy.get_param('~callback_image_topic')
         self.published_image_topic = rospy.get_param('~detections_image_topic')
 
         # Define subscribers
@@ -89,7 +88,9 @@ class detectManager:
 
         # Define publishers
         self.pub_ = rospy.Publisher(
-            self.detected_objects_topic, BoundingBoxes, queue_size=10)
+            self.detected_objects_topic, Int32MultiArray, queue_size=10)
+        self.pub_img_ = rospy.Publisher(
+            self.callback_image_topic, Image, queue_size=10)
         self.pub_viz_ = rospy.Publisher(
             self.published_image_topic, Image, queue_size=10)
         rospy.loginfo("Launched node for object detection")
@@ -99,18 +100,13 @@ class detectManager:
         self.warmup()
         rospy.spin()
 
+
     def imageCb(self, data):
         # Convert the image to OpenCV
         try:
             self.cv_image = self.bridge.imgmsg_to_cv2(data, "rgb8")
         except CvBridgeError as e:
             print(e) 
-    
-        #a = input()
-        # Initialize detection results
-        detection_results = BoundingBoxes()
-        detection_results.header = data.header
-        detection_results.image_header = data.header
 
         # Configure input
         input_img = self.imagePreProcessing(self.cv_image)
@@ -159,6 +155,7 @@ class detectManager:
 
         return input_img
 
+
     def visualizeAndPublish(self, output, imgIn):
         # Copy image and visualize
         imgOut = imgIn.copy()
@@ -193,6 +190,7 @@ class detectManager:
         image_msg = self.bridge.cv2_to_imgmsg(imgOut, "rgb8")
         self.pub_viz_.publish(image_msg)
 
+
     def warmup(self):
         self.weights = os.path.join(package_path, 'yolov5/weights', self.weights)
         print("Load model: " + self.weights)
@@ -200,6 +198,18 @@ class detectManager:
         if self.half:
             self.model.half()  # to FP16
 
+    # output the data of the biggest(closest) hole
+    def maxBoundingBox(self, det):
+        if len(det) > 1:
+            area_list = []
+            for i in range(len(det)):
+                length = int(det[i][2].item()) - int(det[i][0].item()) # xmax - xmin
+                width = int(det[i][3].item()) - int(det[i][1].item()) # ymax - ymin
+                area_list.append(length*width)
+            max_at = area_list.index(max(area_list))
+            return det[max_at]
+        else:
+            return det[0]
 
     def detect(self, opencv_img, data, save_img=False):
         
@@ -274,14 +284,6 @@ class detectManager:
             img = img.unsqueeze(0)
         # Inference
         t1 = time_synchronized()
-        # print("\nhaha: 83945723\n")
-        # print(img.shape)
-        # print(img)
-        # print(self.conf_thres)
-        # print(self.iou_thres)
-        # print(self.classes)
-        # print(self.agnostic_nms)
-        # print("\nhaha: 02394857\n")
 
         pred = model(img, augment=False)[0]
         # Apply NMS
@@ -292,24 +294,22 @@ class detectManager:
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
         # Process detections
-        detection_results = BoundingBoxes()
-        detection_results.header = data.header
-        detection_results.image_header = data.header
+        # bounding_boxes = []
+        # detection_results = BoundingBoxes()
+        # detection_results.header = data.header
+        # detection_results.image_header = data.header
 
         for i, det in enumerate(pred):  # detections per image
 
             im0 = im0s
             p = self.path
-            # if webcam:  # batch_size >= 1
-            #     p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
-            # else:
-            #     p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
-            # p = Path(p)  # to Path
-            #save_path = str(self.save_dir + "/img.jpg")  # img.jpg
-            #txt_path = str(self.save_dir + "/labels/label")
             s = ''
             s += '%gx%g ' % img.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+            
+            print("---")
+            # message data
+            detection_msg = Int32MultiArray()
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(
@@ -319,15 +319,23 @@ class detectManager:
                     n = (det[:, -1] == c).sum()  # detections per class
                     s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
                 
-                xmin, ymin, xmax, ymax, conf, det_class = det[0]
-                detection_msg = BoundingBox()
-                detection_msg.xmin = int(xmin.item())
-                detection_msg.xmax = int(xmax.item())
-                detection_msg.ymin = int(ymin.item())
-                detection_msg.ymax = int(ymax.item())
-                detection_msg.probability = conf.item()
-                detection_msg.Class = names[int(det_class)]
-                detection_results.bounding_boxes.append(detection_msg)
+                max_det = self.maxBoundingBox(det)
+
+                print("test:situation1")
+                xmin, ymin, xmax, ymax, _, det_class = list(map(np.int32, [j.item() for j in max_det]))
+                # calculate the center of the hole(bounding box)
+                xcenter = int((xmin + xmax)/2)
+                ycenter = int((ymin + ymax)/2)
+                confidence = int(det[0][4].item()*100)
+                
+                detection_msg.data = [xcenter, ycenter, xmin, ymin, xmax, ymax, confidence]
+
+                # print("det:")
+                # print(det)
+                # print("max_det:")
+                # print(max_det)
+                # print("detection_msg")
+                # print(detection_msg)
 
                 # Write results
                 for *xyxy, conf, cls in reversed(det):
@@ -342,8 +350,12 @@ class detectManager:
                         label = f'{names[int(cls)]} {conf:.2f}'
                         plot_one_box(xyxy, im0, label=label,
                                     color=colors[int(cls)], line_thickness=3)
+
+            else: 
+                detection_msg.data = []
             # Print time (inference + NMS)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
+            
             # Stream results
             if view_img:
                 cv2.imshow(str(p), im0)
@@ -368,14 +380,17 @@ class detectManager:
                         vid_writer = cv2.VideoWriter(
                             save_path, cv2.VideoWriter_fourcc(*fourcc), fps, (w, h))
                     vid_writer.write(im0)
-        self.pub_.publish(detection_results)
+        
+        # publish the data of the biggest(closest) hole
+        self.pub_.publish(detection_msg)   
+        # callback: publish the (original)img that has just been detected
+        self.pub_img_.publish(data)
         #if save_txt or save_img:
         #    s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
             #print(f"Results saved to {save_dir}{s}")
 
         print(f'Done. ({time.time() - t0:.3f}s)')
-
-
+        
 
 
 if __name__ == '__main__':
